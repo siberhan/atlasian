@@ -35,6 +35,7 @@ DEFAULT_TIMEOUT_SECONDS = 180
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY_SECONDS = 3
 DEFAULT_MIN_DELTA_CHARS = 80
+DEFAULT_MAX_RECOVERY_PER_RUN = 3
 
 
 def utc_now_iso() -> str:
@@ -370,6 +371,267 @@ def render_command(
     return rendered
 
 
+def record_failed_session(
+    failed_path: Path,
+    session_id: str,
+    transcript_path: Path,
+    event_name: str,
+    attempts: int,
+) -> None:
+    failed = load_json_file(failed_path)
+    sessions = failed.setdefault("sessions", {})
+    if not isinstance(sessions, dict):
+        sessions = {}
+        failed["sessions"] = sessions
+    sessions[session_id] = {
+        "transcript": str(transcript_path),
+        "event": event_name or "hook",
+        "failed_at": utc_now_iso(),
+        "attempts_exhausted": attempts,
+    }
+    atomic_write_json(failed_path, failed)
+
+
+def clear_failed_session(failed_path: Path, session_id: str) -> None:
+    if not failed_path.exists():
+        return
+    failed = load_json_file(failed_path)
+    sessions = failed.get("sessions")
+    if not isinstance(sessions, dict) or session_id not in sessions:
+        return
+    del sessions[session_id]
+    if sessions:
+        atomic_write_json(failed_path, failed)
+    else:
+        try:
+            failed_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def process_single_session(
+    *,
+    config: dict[str, Any],
+    wiki_root: Path,
+    inbox_dir: Path,
+    meta_dir: Path,
+    state_path: Path,
+    failed_path: Path,
+    session_id: str,
+    transcript_path: Path,
+    event_name: str,
+) -> int:
+    """Process one session under exclusive_lock. Returns 0 on success/skip, 1 on failure."""
+    prompt_file_str = str(Path(config["prompt_file"]).expanduser().resolve()) if config.get("prompt_file") else ""
+    command_template: list[str] = config["command"]
+    input_mode: str = config.get("input_mode", "stdin")
+    timeout_seconds = int(config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
+    max_retries = max(1, int(config.get("max_retries", DEFAULT_MAX_RETRIES)))
+    retry_delay_seconds = max(0.0, float(config.get("retry_delay_seconds", DEFAULT_RETRY_DELAY_SECONDS)))
+    min_delta_chars = max(0, int(config.get("min_delta_chars", DEFAULT_MIN_DELTA_CHARS)))
+    extra_env = config.get("env") if isinstance(config.get("env"), dict) else {}
+
+    if not transcript_path.is_file():
+        append_log(meta_dir, f"SKIP session={session_id}: transcript missing ({transcript_path})")
+        clear_failed_session(failed_path, session_id)
+        return 0
+
+    state = load_json_file(state_path)
+    sessions = state.setdefault("sessions", {})
+    session_state = sessions.get(session_id, {})
+    saved_offset = int(session_state.get("byte_offset", 0)) if isinstance(session_state, dict) else 0
+
+    file_size = transcript_path.stat().st_size
+    start_offset = saved_offset if 0 <= saved_offset <= file_size else 0
+    if start_offset >= file_size:
+        append_log(meta_dir, f"SKIP session={session_id}: no new bytes (offset={start_offset})")
+        clear_failed_session(failed_path, session_id)
+        return 0
+
+    with transcript_path.open("rb") as fh:
+        fh.seek(start_offset)
+        raw_bytes = fh.read()
+    end_offset = start_offset + len(raw_bytes)
+
+    raw_text = raw_bytes.decode("utf-8", errors="replace")
+    formatted_delta, new_chars = format_transcript_delta(raw_text)
+
+    if is_triage_worker_transcript(formatted_delta):
+        append_log(
+            meta_dir,
+            f"SKIP session={session_id}: triage worker transcript (content recursion guard)",
+        )
+        clear_failed_session(failed_path, session_id)
+        return 0
+
+    if new_chars < min_delta_chars:
+        append_log(
+            meta_dir,
+            f"SKIP session={session_id}: new_chars={new_chars} < min_delta_chars={min_delta_chars}",
+        )
+        clear_failed_session(failed_path, session_id)
+        return 0
+
+    uses_prompt_file_flag = any("{prompt_file}" in tok for tok in command_template)
+    inline_system_prompt: str | None = None
+    if prompt_file_str and not uses_prompt_file_flag:
+        inline_system_prompt = Path(prompt_file_str).read_text(encoding="utf-8")
+
+    payload_text = build_triage_payload(
+        wiki_root=wiki_root,
+        inbox_dir=inbox_dir,
+        session_id=session_id,
+        event_name=event_name,
+        formatted_delta=formatted_delta,
+        inline_system_prompt=inline_system_prompt,
+    )
+
+    payload_file_path: Path | None = None
+    try:
+        uses_payload_file = input_mode == "file" or any("{payload_file}" in tok for tok in command_template)
+        if uses_payload_file:
+            fd, tmp_payload = tempfile.mkstemp(prefix="atlasian-delta-", suffix=".txt", dir=str(meta_dir))
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload_text)
+            payload_file_path = Path(tmp_payload)
+
+        cmd = render_command(
+            command_template,
+            prompt_file=prompt_file_str,
+            wiki_root=wiki_root,
+            inbox_dir=inbox_dir,
+            session_id=session_id,
+            payload_file=str(payload_file_path) if payload_file_path else "",
+            prompt_text=payload_text if input_mode == "arg" else "",
+        )
+
+        child_env = os.environ.copy()
+        for key, val in extra_env.items():
+            child_env[str(key)] = str(val)
+        child_env[LOOP_ENV_VAR] = "1"
+
+        stdin_data = payload_text if input_mode == "stdin" else None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=stdin_data,
+                    cwd=str(inbox_dir),
+                    env=child_env,
+                    timeout=timeout_seconds,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    sessions[session_id] = {
+                        "byte_offset": end_offset,
+                        "updated_at": utc_now_iso(),
+                        "last_event": event_name or "hook",
+                    }
+                    atomic_write_json(state_path, state)
+                    clear_failed_session(failed_path, session_id)
+                    append_log(
+                        meta_dir,
+                        f"OK session={session_id} attempt={attempt}/{max_retries} "
+                        f"bytes={start_offset}->{end_offset} new_chars={new_chars}",
+                    )
+                    return 0
+
+                stderr_tail = (proc.stderr or "").strip().replace("\n", " ")[-400:]
+                stdout_tail = (proc.stdout or "").strip().replace("\n", " ")[-240:]
+                detail = f"stderr_tail={stderr_tail!r}"
+                if stdout_tail:
+                    detail += f" stdout_tail={stdout_tail!r}"
+                append_log(
+                    meta_dir,
+                    f"RETRY session={session_id} attempt={attempt}/{max_retries} "
+                    f"exit_code={proc.returncode} {detail}",
+                )
+            except subprocess.TimeoutExpired:
+                append_log(
+                    meta_dir,
+                    f"RETRY session={session_id} attempt={attempt}/{max_retries} "
+                    f"timeout={timeout_seconds}s",
+                )
+            except OSError as exc:
+                append_log(
+                    meta_dir,
+                    f"RETRY session={session_id} attempt={attempt}/{max_retries} os_error={exc}",
+                )
+
+            if attempt < max_retries and retry_delay_seconds > 0:
+                time.sleep(retry_delay_seconds)
+
+        record_failed_session(failed_path, session_id, transcript_path, event_name, max_retries)
+        append_log(
+            meta_dir,
+            f"FAILED session={session_id}: exhausted {max_retries} attempts; "
+            f"watermark preserved at {start_offset}; queued in failed.json",
+        )
+        return 1
+    finally:
+        if payload_file_path is not None:
+            try:
+                payload_file_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def drain_failed_queue(
+    *,
+    config: dict[str, Any],
+    wiki_root: Path,
+    inbox_dir: Path,
+    meta_dir: Path,
+    state_path: Path,
+    failed_path: Path,
+    limit: int | None = None,
+    exclude_session_id: str = "",
+) -> tuple[int, int]:
+    """Retry queued failed sessions under exclusive_lock. Returns (recovered_count, total_attempted)."""
+    if not failed_path.exists():
+        return (0, 0)
+    failed = load_json_file(failed_path)
+    raw_sessions = failed.get("sessions")
+    if not isinstance(raw_sessions, dict) or not raw_sessions:
+        return (0, 0)
+
+    items = [
+        (sid, entry)
+        for sid, entry in raw_sessions.items()
+        if sid != exclude_session_id and isinstance(entry, dict) and entry.get("transcript")
+    ]
+    items.sort(key=lambda pair: str(pair[1].get("failed_at", "")))
+    if limit is not None:
+        items = items[: max(0, limit)]
+
+    recovered = 0
+    attempted = 0
+    for sid, entry in items:
+        attempted += 1
+        tpath = Path(str(entry["transcript"])).expanduser().resolve()
+        ev = str(entry.get("event") or "retry-failed")
+        rc = process_single_session(
+            config=config,
+            wiki_root=wiki_root,
+            inbox_dir=inbox_dir,
+            meta_dir=meta_dir,
+            state_path=state_path,
+            failed_path=failed_path,
+            session_id=sid,
+            transcript_path=tpath,
+            event_name=f"recover:{ev}",
+        )
+        if rc == 0:
+            recovered += 1
+        else:
+            # Stop draining early if the worker/API is still failing
+            break
+    return (recovered, attempted)
+
+
 def run_worker(
     config_path: Path,
     session_id: str,
@@ -385,160 +647,82 @@ def run_worker(
     inbox_dir = wiki_root / "inbox"
     meta_dir = wiki_root / ".llm-wiki"
     state_path = meta_dir / "state.json"
+    failed_path = meta_dir / "failed.json"
     lock_path = meta_dir / "inbox.lock"
 
     inbox_dir.mkdir(parents=True, exist_ok=True)
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt_file_str = str(Path(config["prompt_file"]).expanduser().resolve()) if config.get("prompt_file") else ""
-    command_template: list[str] = config["command"]
-    input_mode: str = config.get("input_mode", "stdin")
-    timeout_seconds = int(config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
-    max_retries = max(1, int(config.get("max_retries", DEFAULT_MAX_RETRIES)))
-    retry_delay_seconds = max(0.0, float(config.get("retry_delay_seconds", DEFAULT_RETRY_DELAY_SECONDS)))
-    min_delta_chars = max(0, int(config.get("min_delta_chars", DEFAULT_MIN_DELTA_CHARS)))
-    extra_env = config.get("env") if isinstance(config.get("env"), dict) else {}
-
-    if not transcript_path.is_file():
-        append_log(meta_dir, f"SKIP session={session_id}: transcript missing ({transcript_path})")
-        return 0
+    max_recovery = max(0, int(config.get("max_recovery_per_run", DEFAULT_MAX_RECOVERY_PER_RUN)))
 
     with exclusive_lock(lock_path):
-        state = load_json_file(state_path)
-        sessions = state.setdefault("sessions", {})
-        session_state = sessions.get(session_id, {})
-        saved_offset = int(session_state.get("byte_offset", 0)) if isinstance(session_state, dict) else 0
-
-        file_size = transcript_path.stat().st_size
-        start_offset = saved_offset if 0 <= saved_offset <= file_size else 0
-        if start_offset >= file_size:
-            append_log(meta_dir, f"SKIP session={session_id}: no new bytes (offset={start_offset})")
-            return 0
-
-        with transcript_path.open("rb") as fh:
-            fh.seek(start_offset)
-            raw_bytes = fh.read()
-        end_offset = start_offset + len(raw_bytes)
-
-        raw_text = raw_bytes.decode("utf-8", errors="replace")
-        formatted_delta, new_chars = format_transcript_delta(raw_text)
-
-        if is_triage_worker_transcript(formatted_delta):
-            append_log(
-                meta_dir,
-                f"SKIP session={session_id}: triage worker transcript (content recursion guard)",
-            )
-            return 0
-
-        if new_chars < min_delta_chars:
-            append_log(
-                meta_dir,
-                f"SKIP session={session_id}: new_chars={new_chars} < min_delta_chars={min_delta_chars}",
-            )
-            return 0
-
-        uses_prompt_file_flag = any("{prompt_file}" in tok for tok in command_template)
-        inline_system_prompt: str | None = None
-        if prompt_file_str and not uses_prompt_file_flag:
-            inline_system_prompt = Path(prompt_file_str).read_text(encoding="utf-8")
-
-        payload_text = build_triage_payload(
+        rc = process_single_session(
+            config=config,
             wiki_root=wiki_root,
             inbox_dir=inbox_dir,
+            meta_dir=meta_dir,
+            state_path=state_path,
+            failed_path=failed_path,
             session_id=session_id,
+            transcript_path=transcript_path,
             event_name=event_name,
-            formatted_delta=formatted_delta,
-            inline_system_prompt=inline_system_prompt,
         )
-
-        payload_file_path: Path | None = None
-        try:
-            uses_payload_file = input_mode == "file" or any("{payload_file}" in tok for tok in command_template)
-            if uses_payload_file:
-                fd, tmp_payload = tempfile.mkstemp(prefix="atlasian-delta-", suffix=".txt", dir=str(meta_dir))
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(payload_text)
-                payload_file_path = Path(tmp_payload)
-
-            cmd = render_command(
-                command_template,
-                prompt_file=prompt_file_str,
+        if rc == 0 and max_recovery > 0 and failed_path.exists():
+            recovered, attempted = drain_failed_queue(
+                config=config,
                 wiki_root=wiki_root,
                 inbox_dir=inbox_dir,
-                session_id=session_id,
-                payload_file=str(payload_file_path) if payload_file_path else "",
-                prompt_text=payload_text if input_mode == "arg" else "",
+                meta_dir=meta_dir,
+                state_path=state_path,
+                failed_path=failed_path,
+                limit=max_recovery,
+                exclude_session_id=session_id,
             )
+            if attempted > 0:
+                append_log(meta_dir, f"AUTO-RECOVER recovered={recovered}/{attempted}")
+        return rc
 
-            child_env = os.environ.copy()
-            for key, val in extra_env.items():
-                child_env[str(key)] = str(val)
-            child_env[LOOP_ENV_VAR] = "1"
 
-            stdin_data = payload_text if input_mode == "stdin" else None
+def run_retry_failed(config_path: Path) -> int:
+    config = load_json_file(config_path)
+    errors = validate_config(config)
+    if errors:
+        for err in errors:
+            print(f"ERROR: {err}", file=sys.stderr)
+        return 1
 
-            for attempt in range(1, max_retries + 1):
-                try:
-                    proc = subprocess.run(
-                        cmd,
-                        input=stdin_data,
-                        cwd=str(inbox_dir),
-                        env=child_env,
-                        timeout=timeout_seconds,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    if proc.returncode == 0:
-                        sessions[session_id] = {
-                            "byte_offset": end_offset,
-                            "updated_at": utc_now_iso(),
-                            "last_event": event_name or "hook",
-                        }
-                        atomic_write_json(state_path, state)
-                        append_log(
-                            meta_dir,
-                            f"OK session={session_id} attempt={attempt}/{max_retries} "
-                            f"bytes={start_offset}->{end_offset} new_chars={new_chars}",
-                        )
-                        return 0
+    wiki_root = Path(config["wiki_root"]).expanduser().resolve()
+    inbox_dir = wiki_root / "inbox"
+    meta_dir = wiki_root / ".llm-wiki"
+    state_path = meta_dir / "state.json"
+    failed_path = meta_dir / "failed.json"
+    lock_path = meta_dir / "inbox.lock"
 
-                    stderr_tail = (proc.stderr or "").strip().replace("\n", " ")[-400:]
-                    stdout_tail = (proc.stdout or "").strip().replace("\n", " ")[-240:]
-                    detail = f"stderr_tail={stderr_tail!r}"
-                    if stdout_tail:
-                        detail += f" stdout_tail={stdout_tail!r}"
-                    append_log(
-                        meta_dir,
-                        f"RETRY session={session_id} attempt={attempt}/{max_retries} "
-                        f"exit_code={proc.returncode} {detail}",
-                    )
-                except subprocess.TimeoutExpired:
-                    append_log(
-                        meta_dir,
-                        f"RETRY session={session_id} attempt={attempt}/{max_retries} "
-                        f"timeout={timeout_seconds}s",
-                    )
-                except OSError as exc:
-                    append_log(
-                        meta_dir,
-                        f"RETRY session={session_id} attempt={attempt}/{max_retries} os_error={exc}",
-                    )
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
 
-                if attempt < max_retries and retry_delay_seconds > 0:
-                    time.sleep(retry_delay_seconds)
+    with exclusive_lock(lock_path):
+        recovered, attempted = drain_failed_queue(
+            config=config,
+            wiki_root=wiki_root,
+            inbox_dir=inbox_dir,
+            meta_dir=meta_dir,
+            state_path=state_path,
+            failed_path=failed_path,
+            limit=None,
+        )
+        remaining = 0
+        if failed_path.exists():
+            rem_sessions = load_json_file(failed_path).get("sessions")
+            if isinstance(rem_sessions, dict):
+                remaining = len(rem_sessions)
 
-            append_log(
-                meta_dir,
-                f"FAILED session={session_id}: exhausted {max_retries} attempts; watermark preserved at {start_offset}",
-            )
-            return 1
-        finally:
-            if payload_file_path is not None:
-                try:
-                    payload_file_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+    if attempted == 0:
+        print("No failed sessions pending.")
+        return 0
+
+    print(f"Recovered {recovered}/{attempted} failed session(s); remaining: {remaining}.")
+    return 0 if remaining == 0 else 1
 
 
 def spawn_detached_worker(
@@ -590,6 +774,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--transcript", default="", help="Path to session transcript (or read from stdin JSON)")
     parser.add_argument("--event", default="", help="Hook event name (e.g., PreCompact, SessionEnd)")
     parser.add_argument("--dry-run", action="store_true", help="Validate config and paths without running")
+    parser.add_argument("--retry-failed", action="store_true", help="Retry all pending sessions queued in .llm-wiki/failed.json")
     parser.add_argument("--foreground", action="store_true", help="Run synchronously instead of detaching")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -626,6 +811,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if errors:
         return 0
+
+    if args.retry_failed:
+        return run_retry_failed(config_path)
 
     stdin_payload = {} if args.worker else read_stdin_payload()
 

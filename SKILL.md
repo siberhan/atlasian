@@ -79,7 +79,7 @@ Do **not** invent or force optional frontmatter fields that the user did not ena
 4. Update `wiki/index.md` (or the relevant subfolder `index.md`) and append an entry to `wiki/log.md`.
 
 ### Compile (`inbox/` → `wiki/`)
-1. Read `<wiki-root>/AGENTS.md` (and `inbox/AGENTS.md` if present). Inspect `inbox/index.md` and all pending items in `inbox/` (auto-captured chat notes, brainstorms, voice transcripts, rough drafts).
+1. Read `<wiki-root>/AGENTS.md` (and `inbox/AGENTS.md` if present). If `<wiki-root>/.llm-wiki/failed.json` exists with pending failed captures, offer to recover them first (`python3 <atlasian>/scripts/capture_inbox.py --config <wiki-root>/.llm-wiki/capture.json --retry-failed`). Then inspect `inbox/index.md` and all pending items in `inbox/` (auto-captured chat notes, brainstorms, voice transcripts, rough drafts).
 2. Filter aggressively: discard conversational noise, dead ends, and low-value chatter.
 3. Integrate surviving ideas, decisions, and facts into existing or new OKF pages in `wiki/`, recording provenance in `sources` or `resource` (for example `session:<session_id>` or `inbox/<file>.md`).
 4. Update `wiki/index.md` and `wiki/log.md`. Remove or clear compiled items from `inbox/` and refresh `inbox/index.md`.

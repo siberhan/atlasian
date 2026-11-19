@@ -110,7 +110,7 @@ Every AI harness uses a different hook format. `atlasian` keeps hooks thin (one 
    - **Exclusive lockfile**: Serializes concurrent hooks via `.llm-wiki/inbox.lock` so `inbox/index.md` never corrupts.
    - **Delta watermark**: Tracks processed byte offsets in `.llm-wiki/state.json` to prevent duplicate notes.
    - **Compaction context tagging**: Labels prior compaction summaries as context-only so Hook #2 understands earlier context without duplicating Hook #1.
-   - **3-minute timeout + max 3 retries**: Automatically retries failed or timed-out runs (up to 3 attempts). Advances the watermark only after a successful run so no chat data is lost.
+   - **3-minute timeout + max 3 retries + failed-session recovery**: Automatically retries failed or timed-out runs (up to 3 attempts). If all 3 fail (for example offline or API outage), the watermark is preserved and the session is queued in `.llm-wiki/failed.json` for automatic catch-up on the next successful hook or manual recovery via `--retry-failed`.
 
 ---
 

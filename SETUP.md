@@ -208,3 +208,5 @@ python3 /absolute/path/to/atlasian/scripts/capture_inbox.py \
 ```
 
 Confirm it exits with code `0`, then tell the user setup is complete and show them where `<wiki-root>/AGENTS.md` and `<wiki-root>/inbox/AGENTS.md` live so they can edit their rules anytime.
+
+*(Recovery tip: If an offline or API outage causes all 3 retries to fail, the session is saved in `<wiki-root>/.llm-wiki/failed.json`. It recovers automatically on the next successful hook, or manually anytime with `python3 /absolute/path/to/atlasian/scripts/capture_inbox.py --config /absolute/path/to/<wiki-root>/.llm-wiki/capture.json --retry-failed`.)*

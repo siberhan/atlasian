@@ -563,6 +563,117 @@ class CaptureInboxTests(unittest.TestCase):
         log_text = (self.meta_dir / "capture.log").read_text(encoding="utf-8")
         self.assertIn("REAL_ROOT_CAUSE_ERROR: invalid_params", log_text)
 
+    def test_failed_queue_manual_retry_and_auto_recovery(self) -> None:
+        toggle_file = self.root / "allow_success.flag"
+        handled_file = self.root / "handled_sessions.log"
+        helper = self.write_helper(
+            "toggle_worker.py",
+            f"""
+            import sys
+            from pathlib import Path
+            sid = sys.argv[1]
+            if not Path({str(toggle_file)!r}).exists():
+                sys.stderr.write("network offline\\n")
+                sys.exit(1)
+            with Path({str(handled_file)!r}).open("a", encoding="utf-8") as fh:
+                fh.write(sid + "\\n")
+            """,
+        )
+        self.write_config([sys.executable, str(helper), "{session_id}"], max_retries=2)
+
+        t_a = self.root / "sess_a.txt"
+        t_a.write_text("Offline session A decision that must be recovered later.", encoding="utf-8")
+
+        # Session A fails while offline -> queued in failed.json
+        res_fail = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--session-id",
+                "sess-a",
+                "--transcript",
+                str(t_a),
+                "--foreground",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(res_fail.returncode, 0)
+        failed_path = self.meta_dir / "failed.json"
+        self.assertTrue(failed_path.exists())
+        failed_data = json.loads(failed_path.read_text(encoding="utf-8"))
+        self.assertIn("sess-a", failed_data["sessions"])
+
+        # Network comes back -> manual --retry-failed recovers Session A and clears failed.json
+        toggle_file.write_text("online", encoding="utf-8")
+        res_recover = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--retry-failed",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_recover.returncode, 0, res_recover.stderr)
+        self.assertIn("Recovered 1/1", res_recover.stdout)
+        self.assertFalse(failed_path.exists())
+        self.assertIn("sess-a", handled_file.read_text(encoding="utf-8").splitlines())
+
+        # Now test AUTO-RECOVERY: Session B fails offline, then Session C succeeds online -> both B and C captured
+        toggle_file.unlink()
+        t_b = self.root / "sess_b.txt"
+        t_b.write_text("Offline session B brainstorm to auto-recover on next hook.", encoding="utf-8")
+        res_b = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--session-id",
+                "sess-b",
+                "--transcript",
+                str(t_b),
+                "--foreground",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(res_b.returncode, 0)
+        self.assertTrue(failed_path.exists())
+
+        toggle_file.write_text("online", encoding="utf-8")
+        t_c = self.root / "sess_c.txt"
+        t_c.write_text("Online session C decision that also triggers auto-recovery.", encoding="utf-8")
+        res_c = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--session-id",
+                "sess-c",
+                "--transcript",
+                str(t_c),
+                "--foreground",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_c.returncode, 0, res_c.stderr)
+        self.assertFalse(failed_path.exists())
+        handled = handled_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("sess-b", handled)
+        self.assertIn("sess-c", handled)
+
 
 if __name__ == "__main__":
     unittest.main()
