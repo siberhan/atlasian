@@ -127,6 +127,10 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+ALLOWED_ROLES = {"USER", "ASSISTANT"}
+ALLOWED_CONTENT_BLOCK_TYPES = {"", "text", "input_text", "output_text"}
+
+
 def extract_text_from_content(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -139,14 +143,17 @@ def extract_text_from_content(content: Any) -> str:
                     parts.append(text)
             elif isinstance(item, dict):
                 item_type = str(item.get("type", "")).lower()
-                # Skip noisy tool results / binary / thinking blocks
-                if item_type in {"tool_result", "tool_use", "image", "thinking"}:
+                # Strict allowlist: keep only plain text blocks (skip tool_use, tool_result, thinking, image, etc.)
+                if item_type not in ALLOWED_CONTENT_BLOCK_TYPES:
                     continue
                 text = item.get("text") or item.get("content")
                 if isinstance(text, str) and text.strip():
                     parts.append(text.strip())
         return "\n".join(parts).strip()
     if isinstance(content, dict):
+        item_type = str(content.get("type", "")).lower()
+        if item_type and item_type not in ALLOWED_CONTENT_BLOCK_TYPES:
+            return ""
         text = content.get("text") or content.get("content")
         if isinstance(text, str):
             return text.strip()
@@ -168,12 +175,16 @@ def parse_jsonl_record(record: dict[str, Any]) -> tuple[str, str] | None:
         or subtype in {"compact_summary", "compaction_summary"}
     )
 
+    # Skip injected system/skill/command meta messages unless explicitly a compaction summary
+    if not is_summary and (record.get("isMeta") or record.get("is_meta")):
+        return None
+
     message = record.get("message")
     if isinstance(message, dict):
-        role = str(message.get("role") or rec_type or "message").upper()
+        role = str(message.get("role") or rec_type or "").upper()
         text = extract_text_from_content(message.get("content"))
     else:
-        role = str(record.get("role") or rec_type or "message").upper()
+        role = str(record.get("role") or rec_type or "").upper()
         text = extract_text_from_content(
             record.get("summary") if is_summary and record.get("summary") else record.get("content") or record.get("text")
         )
@@ -184,7 +195,8 @@ def parse_jsonl_record(record: dict[str, Any]) -> tuple[str, str] | None:
     if is_summary:
         return ("summary", text)
 
-    if role in {"TOOL", "PROGRESS", "FILE-HISTORY-SNAPSHOT"}:
+    # Strict allowlist: pass only USER and ASSISTANT messages to the triage worker
+    if role not in ALLOWED_ROLES:
         return None
 
     return ("message", f"{role}: {text}")

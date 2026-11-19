@@ -419,6 +419,71 @@ class CaptureInboxTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertFalse(marker.exists())
 
+    def test_strict_allowlist_drops_system_developer_meta_and_tools(self) -> None:
+        captured_file = self.root / "filtered.txt"
+        helper = self.write_helper(
+            "dump.py",
+            f"""
+            import sys
+            from pathlib import Path
+            Path({str(captured_file)!r}).write_text(sys.stdin.read(), encoding="utf-8")
+            """,
+        )
+        self.write_config([sys.executable, str(helper)])
+
+        transcript = self.root / "mixed.jsonl"
+        rows = [
+            {"type": "system", "message": {"role": "system", "content": "SECRET_SYSTEM_PROMPT_DO_NOT_SEND"}},
+            {"type": "developer", "message": {"role": "developer", "content": "SECRET_DEVELOPER_PROMPT"}},
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content": "INJECTED_META_SKILL_TEXT"}},
+            {"type": "tool", "message": {"role": "tool", "content": "RAW_TOOL_STDOUT_NOISE"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "text": "PRIVATE_THINKING_TRACE"},
+                        {"type": "tool_use", "name": "bash", "text": "TOOL_CALL_PAYLOAD"},
+                        {"type": "tool_result", "content": "TOOL_RESULT_PAYLOAD"},
+                        {"type": "text", "text": "Clean assistant decision: use SQLite append-only export."},
+                    ],
+                },
+            },
+            {"type": "user", "message": {"role": "user", "content": "Great, keep only user and assistant text messages."}},
+        ]
+        transcript.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--session-id",
+                "filter-1",
+                "--transcript",
+                str(transcript),
+                "--foreground",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        out = captured_file.read_text(encoding="utf-8")
+        self.assertIn("Clean assistant decision: use SQLite append-only export.", out)
+        self.assertIn("Great, keep only user and assistant text messages.", out)
+        for forbidden in (
+            "SECRET_SYSTEM_PROMPT_DO_NOT_SEND",
+            "SECRET_DEVELOPER_PROMPT",
+            "INJECTED_META_SKILL_TEXT",
+            "RAW_TOOL_STDOUT_NOISE",
+            "PRIVATE_THINKING_TRACE",
+            "TOOL_CALL_PAYLOAD",
+            "TOOL_RESULT_PAYLOAD",
+        ):
+            self.assertNotIn(forbidden, out)
+
 
 if __name__ == "__main__":
     unittest.main()
