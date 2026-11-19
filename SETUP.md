@@ -3,6 +3,8 @@
 Read this file only during initial setup (or when the user asks to reconfigure `atlasian`).
 Once `<wiki-root>` and `<wiki-root>/.llm-wiki/capture.json` exist (or auto-capture is explicitly disabled in `<wiki-root>/AGENTS.md`), do not open this file during normal wiki operations.
 
+**Never edit files inside the `atlasian` skill folder during setup.** Keep the cloned skill repo clean so `git pull` updates never conflict. Write all user configs, rules, and harness wrapper scripts inside `<wiki-root>` or your harness profile folder.
+
 ---
 
 ## Step 1: Ask the User Before Creating Any Files

@@ -46,7 +46,7 @@ Because `capture_inbox.py` reads a transcript file, wire a thin wrapper script (
 
 1. Checks `ATLASIAN_CAPTURE_ACTIVE=1` first and exits `0` immediately (loop guard).
 2. Reads the hook payload JSON from stdin and collects `session_id` (plus `extra.old_session_id` when present).
-3. Appends new `user`/`assistant` rows from `$HERMES_HOME/state.db` to `<wiki-root>/.llm-wiki/transcripts/<session_id>.jsonl` as JSONL records `{"message": {"role": ..., "content": ...}}`.
+3. Appends new `user`/`assistant` rows from `$HERMES_HOME/state.db` (`SELECT id, role, content, _compressed_summary FROM messages ...`) to `<wiki-root>/.llm-wiki/transcripts/<session_id>.jsonl` as JSONL records `{"message": {"role": ..., "content": ...}}`, setting `"isCompactSummary": true` whenever `_compressed_summary` is truthy so `capture_inbox.py` labels it `[PRIOR COMPACTION SUMMARY — CONTEXT ONLY]`.
 4. Tracks a per-session `max_id` cursor so the staged JSONL file stays **append-only** and the byte-offset watermark in `.llm-wiki/state.json` remains valid.
 5. Invokes `capture_inbox.py --config <wiki-root>/.llm-wiki/capture.json --session-id <sid> --transcript <jsonl-path> --event <event>`.
 6. Exits `0` on every error path so Hermes sessions never fail.

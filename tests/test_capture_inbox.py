@@ -484,6 +484,85 @@ class CaptureInboxTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, out)
 
+    def test_content_recursion_guard_and_stderr_tail_logging(self) -> None:
+        marker = self.root / "recursive_ran.txt"
+        helper = self.write_helper(
+            "rec.py",
+            f"""
+            from pathlib import Path
+            Path({str(marker)!r}).write_text("ran", encoding="utf-8")
+            """,
+        )
+        self.write_config([sys.executable, str(helper)])
+
+        # Simulate a harness that stripped ATLASIAN_CAPTURE_ACTIVE on hook spawn
+        triage_transcript = self.root / "triage_session.jsonl"
+        triage_transcript.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": "<!-- ATLASIAN_TRIAGE_WORKER -->\n\n# Inbox Triage Agent Prompt\nSome long text...",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--session-id",
+                "worker-loop-1",
+                "--transcript",
+                str(triage_transcript),
+                "--foreground",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertFalse(marker.exists())
+        log_text = (self.meta_dir / "capture.log").read_text(encoding="utf-8")
+        self.assertIn("content recursion guard", log_text)
+
+        # Verify stderr tail logging captures real error even after long startup warning
+        err_helper = self.write_helper(
+            "noisy_err.py",
+            """
+            import sys
+            sys.stderr.write("STARTUP_WARNING " * 60 + "\\nREAL_ROOT_CAUSE_ERROR: invalid_params\\n")
+            sys.exit(1)
+            """,
+        )
+        self.write_config([sys.executable, str(err_helper)], max_retries=1)
+        normal_transcript = self.root / "normal.txt"
+        normal_transcript.write_text("Important decision about tail error logging in capture.log.", encoding="utf-8")
+        fail = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--config",
+                str(self.config_path),
+                "--session-id",
+                "err-tail-1",
+                "--transcript",
+                str(normal_transcript),
+                "--foreground",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(fail.returncode, 0)
+        log_text = (self.meta_dir / "capture.log").read_text(encoding="utf-8")
+        self.assertIn("REAL_ROOT_CAUSE_ERROR: invalid_params", log_text)
+
 
 if __name__ == "__main__":
     unittest.main()

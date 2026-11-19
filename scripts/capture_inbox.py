@@ -29,6 +29,8 @@ import time
 from typing import Any, Iterator
 
 LOOP_ENV_VAR = "ATLASIAN_CAPTURE_ACTIVE"
+TRIAGE_WORKER_MARKER = "<!-- ATLASIAN_TRIAGE_WORKER -->"
+TRIAGE_PROMPT_PREFIX = "# Inbox Triage Agent Prompt"
 DEFAULT_TIMEOUT_SECONDS = 180
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY_SECONDS = 3
@@ -296,6 +298,19 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def is_triage_worker_transcript(formatted_delta: str) -> bool:
+    """Content-based recursion guard when a harness strips env vars on hook spawn."""
+    marker = "[NEW MESSAGES]\n"
+    idx = formatted_delta.find(marker)
+    body = formatted_delta[idx + len(marker) :] if idx != -1 else formatted_delta
+    first_line = body.lstrip().splitlines()[0] if body.strip() else ""
+    for prefix in ("USER:", "ASSISTANT:"):
+        if first_line.startswith(prefix):
+            first_line = first_line[len(prefix) :].lstrip()
+            break
+    return first_line.startswith(TRIAGE_WORKER_MARKER) or first_line.startswith(TRIAGE_PROMPT_PREFIX)
+
+
 def build_triage_payload(
     *,
     wiki_root: Path,
@@ -305,7 +320,7 @@ def build_triage_payload(
     formatted_delta: str,
     inline_system_prompt: str | None,
 ) -> str:
-    parts: list[str] = []
+    parts: list[str] = [TRIAGE_WORKER_MARKER]
     if inline_system_prompt:
         parts.append(inline_system_prompt.strip())
         parts.append("---")
@@ -408,6 +423,13 @@ def run_worker(
         raw_text = raw_bytes.decode("utf-8", errors="replace")
         formatted_delta, new_chars = format_transcript_delta(raw_text)
 
+        if is_triage_worker_transcript(formatted_delta):
+            append_log(
+                meta_dir,
+                f"SKIP session={session_id}: triage worker transcript (content recursion guard)",
+            )
+            return 0
+
         if new_chars < min_delta_chars:
             append_log(
                 meta_dir,
@@ -481,11 +503,15 @@ def run_worker(
                         )
                         return 0
 
-                    stderr_excerpt = (proc.stderr or "").strip().replace("\n", " ")[:240]
+                    stderr_tail = (proc.stderr or "").strip().replace("\n", " ")[-400:]
+                    stdout_tail = (proc.stdout or "").strip().replace("\n", " ")[-240:]
+                    detail = f"stderr_tail={stderr_tail!r}"
+                    if stdout_tail:
+                        detail += f" stdout_tail={stdout_tail!r}"
                     append_log(
                         meta_dir,
                         f"RETRY session={session_id} attempt={attempt}/{max_retries} "
-                        f"exit_code={proc.returncode} stderr={stderr_excerpt!r}",
+                        f"exit_code={proc.returncode} {detail}",
                     )
                 except subprocess.TimeoutExpired:
                     append_log(
