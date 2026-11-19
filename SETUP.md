@@ -188,7 +188,7 @@ python3 /absolute/path/to/atlasian/scripts/capture_inbox.py \
 *(If your harness passes hook payload JSON on stdin—such as `session_id` and `transcript_path`—you may omit `--session-id` and `--transcript`; `capture_inbox.py` reads them automatically from stdin JSON.)*
 
 ### Harness-Specific Reminders
-- **Pre-compaction vs Post-compaction:** Prefer **pre-compaction** hooks (such as `PreCompact`) when your harness supports them, because raw messages are still intact before summarization drops details. If your harness only provides an **after-compaction** hook (such as Hermes `session:compress`), wire that hook instead. Always also hook session end/reset so short sessions that never compact are still captured.
+- **Pre-compaction vs Post-compaction:** Prefer **pre-compaction** hooks (such as `PreCompact`) when your harness supports them, because raw messages are still intact before summarization drops details. If your harness only provides an **after-compaction** hook (such as Hermes `post_compaction`), wire that hook instead. Always also hook session end/reset so short sessions that never compact are still captured.
 - **Hermes Agent:**
   - Use **shell hooks** (`hooks:` block in the profile `config.yaml`), not gateway hooks—shell hooks are the only system that fires in CLI, Gateway, Desktop, TUI, and dashboard chat.
   - Wire `post_compaction`, `on_session_finalize`, and `on_session_reset`.
