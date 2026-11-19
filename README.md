@@ -158,7 +158,8 @@ atlasian/
 ├── prompts/
 │   └── inbox-triage.md             # System prompt for the headless inbox triage worker
 ├── references/
-│   └── okf-v0.3-fields.md          # Complete OKF v0.3 frontmatter YAML reference
+│   ├── okf-v0.3-fields.md          # Complete OKF v0.3 frontmatter YAML reference
+│   └── hermes-hooks.md             # Hermes Agent shell-hooks + state.db setup guide
 ├── scripts/
 │   └── capture_inbox.py            # Zero-dependency hook runner with 6 safety guards
 └── tests/
