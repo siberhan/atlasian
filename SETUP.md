@@ -5,18 +5,23 @@ Once `<wiki-root>` and `<wiki-root>/.llm-wiki/capture.json` exist (or auto-captu
 
 ---
 
-## Step 1: Ask the User 3 Quick Questions
+## Step 1: Ask the User Before Creating Any Files
 
-Keep setup short and interactive. Ask only what you cannot detect automatically:
+**IMPORTANT — Interactive Gate:** Do **NOT** assume defaults or create any folder, file, or hook yet. Ask the user every required question below, then **STOP and wait for their answers** before running Step 2.
 
 1. **Wiki location & name:** Where should the wiki folder live?
-   - Default: `~/llm-wiki` (or `./llm-wiki` inside the current workspace). The user can choose any name or path.
+   - Default suggestion: `~/llm-wiki` (or `./llm-wiki` inside the current workspace). The user can choose any name or path.
 2. **OKF v0.3 optional fields & page types:**
-   - Read `references/okf-v0.3-fields.md` in this skill folder so you have the exact YAML format and meaning for every OKF v0.3 field.
-   - Show the clean personal default (`type`, `title`, `description`, `tags`, `sources`, `generated`) and ask if the user wants to enable any extra optional fields (such as `status`, `superseded_by`, `stale_after`, `verified`, `resource`, `usage_window`, `license`, or computation fields) or remove any default optional field.
-   - Show starter page types (`concept`, `project`, `goal`, `decision`, `person`, `source`) and tell the user they are 100% customizable—ask if they want to add, rename, or remove types in `<wiki-root>/AGENTS.md`.
-3. **Auto-capture hooks:** Do you want automatic capture of chat notes into `inbox/` when sessions compact, reset, or end?
-   - If **Yes**: Confirm which headless CLI, fast/cheap model, and low effort setting to use for the active harness (for example: `claude -p --model haiku`, `codex exec`, `hermes`, or `opencode run`).
+   - First read `references/okf-v0.3-fields.md` in this skill folder so you have the exact YAML format and meaning for every OKF v0.3 field.
+   - Show the personal starter set (`type`, `title`, `description`, `tags`, `sources`, `generated`) and ask which optional fields the user wants to keep, remove, or add (such as `status`, `superseded_by`, `stale_after`, `verified`, `resource`, `usage_window`, `license`, or computation fields).
+   - Show starter page types (`concept`, `project`, `goal`, `decision`, `person`, `source`), explain that types are 100% customizable, and ask what types they want in `<wiki-root>/AGENTS.md`.
+3. **Auto-capture hooks (compaction / reset / session end):** Ask whether the user wants automatic capture into `inbox/`.
+   - **If the user enables auto-capture**, you MUST also ask the user to choose (do not silently pick for them):
+     - **Headless CLI:** Which installed agent CLI to run in the background (e.g., `claude -p`, `codex exec`, `hermes`, `opencode run`, or another CLI).
+     - **Model:** Which model to use for the triage worker (recommend a fast, low-cost model supported by that CLI).
+     - **Effort / reasoning level:** Check the real effort or reasoning levels supported by that specific CLI and chosen model, list those options to the user (recommending a lower/faster setting if supported), and ask which one they want—or note if that CLI/model has no effort setting.
+
+> **STOP HERE** until the user answers all questions above (including CLI, model, and effort level if auto-capture is enabled). Only then continue to Step 2.
 
 ---
 
