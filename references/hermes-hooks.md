@@ -19,9 +19,6 @@ Shell hooks are the only hook system that fires across CLI, Gateway, Desktop, TU
 
 ```yaml
 hooks:
-  post_compaction:
-    - command: python3 <profile>/agent-hooks/atlasian-capture.py
-      timeout: 30
   on_session_finalize:
     - command: python3 <profile>/agent-hooks/atlasian-capture.py
       timeout: 30
@@ -40,12 +37,12 @@ hermes config set hooks.<event> '[{"command": "python3 <profile>/agent-hooks/atl
 
 ## 3. Exporting Transcripts from `state.db`
 
-Hermes sends `{hook_event_name, session_id, cwd, profile, extra}` on stdin (no transcript file path). `extra.old_session_id` is included on `post_compaction` when `in_place` is `false`.
+Hermes sends `{hook_event_name, session_id, cwd, profile, extra}` on stdin (no transcript file path).
 
 Because `capture_inbox.py` reads a transcript file, wire a thin wrapper script (for example at `<profile>/agent-hooks/atlasian-capture.py`) that:
 
 1. Checks `ATLASIAN_CAPTURE_ACTIVE=1` first and exits `0` immediately (loop guard).
-2. Reads the hook payload JSON from stdin and collects `session_id` (plus `extra.old_session_id` when present).
+2. Reads the hook payload JSON from stdin and extracts `session_id`.
 3. Appends new `user`/`assistant` rows from `$HERMES_HOME/state.db` (`SELECT id, role, content, _compressed_summary FROM messages ...`) to `<wiki-root>/.llm-wiki/transcripts/<session_id>.jsonl` as JSONL records `{"message": {"role": ..., "content": ...}}`, setting `"isCompactSummary": true` whenever `_compressed_summary` is truthy so `capture_inbox.py` labels it `[PRIOR COMPACTION SUMMARY — CONTEXT ONLY]`.
 4. Tracks a per-session `max_id` cursor so the staged JSONL file stays **append-only** and the byte-offset watermark in `.llm-wiki/state.json` remains valid.
 5. Invokes `capture_inbox.py --config <wiki-root>/.llm-wiki/capture.json --session-id <sid> --transcript <jsonl-path> --event <event>`.

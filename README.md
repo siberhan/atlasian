@@ -102,7 +102,7 @@ Many skills force you to edit `SKILL.md` for personal preferences. When the repo
 Every AI harness uses a different hook format. `atlasian` keeps hooks thin (one line) and puts all logic in one zero-dependency Python script (`scripts/capture_inbox.py`):
 
 1. **Fast one-time setup (`SETUP.md`)**: Your agent asks 3 short questions (wiki folder name, OKF fields/types, and auto-capture CLI/model), creates your wiki (default: `llm-wiki`), and wires a one-line hook. Once configured, `SKILL.md` never opens `SETUP.md` again.
-2. **Pre-compaction preferred, post-compaction supported**: Hooks before compaction (such as `PreCompact`) keep raw details intact; after-compaction hooks (such as Hermes `post_compaction`) and session end/reset hooks are also supported.
+2. **Session-end, reset, and optional pre-compaction hooks**: Wire session end/reset hooks (such as `SessionEnd`, `on_session_finalize`, and `on_session_reset`) plus optional pre-compaction hooks (such as `PreCompact`) when supported.
 3. **Restricted worker safety**: The fast headless triage agent only needs `Read` and `Write`/`Edit` access inside `<wiki-root>/inbox/`—no shell, no web, and no writes to `raw/` or `wiki/`.
 4. **6 built-in reliability guards**:
    - **Loop guard**: Stops infinite hook chains with `ATLASIAN_CAPTURE_ACTIVE=1`.
