@@ -14,7 +14,7 @@ Maintain a persistent, interlinked Markdown wiki that compounds knowledge over t
 1. **Locate `<wiki-root>`:** Use the user's configured wiki folder path (default: `llm-wiki`, customizable at setup).
 2. **One-time setup gate:** If `<wiki-root>` does not exist, or if `<wiki-root>/.llm-wiki/capture.json` is missing (and `<wiki-root>/AGENTS.md` does not explicitly disable auto-capture), read `SETUP.md` in this skill folder and run setup first. Once configured, do not read `SETUP.md` again unless the user asks to reconfigure.
 3. **Read `<wiki-root>/AGENTS.md` first:** Before performing any wiki operation (`ingest`, `compile`, `query`, `lint`), read `<wiki-root>/AGENTS.md` if it exists.
-4. **User rules win:** `<wiki-root>/AGENTS.md` is the user's living rulebook (enabled OKF fields, custom page types, tone, standing context). Whenever `<wiki-root>/AGENTS.md` conflicts with defaults in this `SKILL.md`, follow `<wiki-root>/AGENTS.md`.
+4. **User rules win (keep `AGENTS.md` global & slim):** `<wiki-root>/AGENTS.md` is the user's wiki-wide rulebook (enabled OKF fields, custom page types, tone, general layout rules). Whenever `<wiki-root>/AGENTS.md` conflicts with defaults in this `SKILL.md`, follow `<wiki-root>/AGENTS.md`. Do **not** list individual topic folders or folder-specific rules in root `AGENTS.md`—`wiki/index.md` is the folder map, and any folder-specific rules belong inside that folder's own `<folder>/index.md`.
 
 ---
 
@@ -66,7 +66,7 @@ Do **not** invent or force optional frontmatter fields that the user did not ena
 - **2-Step Reading (Zero Embeddings):**
   1. **Step 1 — Map:** Read `wiki/index.md` first (and `<folder>/index.md` if that folder was split). Pick only matching pages. Use `rg` (ripgrep) across `wiki/` when searching tags, metadata, or exact terms.
   2. **Step 2 — Full Page:** Open full Markdown bodies only for the selected pages.
-- **Lazy Splitting:** Start flat with a single root `wiki/index.md`. Do not create empty subfolder `index.md` files upfront. Only add `<folder>/index.md` when a folder grows past ~25–30 files, and keep a one-line summary + link to it in root `wiki/index.md`.
+- **Lazy Splitting & Folder Rules:** Start flat with a single root `wiki/index.md` (unless `<wiki-root>/AGENTS.md` specifies a folder-per-topic layout). Do not create empty subfolder `index.md` files upfront; add `<folder>/index.md` when a folder grows past ~25–30 files (or when the user creates a dedicated topic folder), keeping a one-line summary + link in root `wiki/index.md`. Keep any folder-specific rules (what belongs in the folder, subfolder conventions) inside `<folder>/index.md`—never duplicate them in root `AGENTS.md`—and always read `<folder>/index.md` before writing inside that folder.
 
 ---
 
