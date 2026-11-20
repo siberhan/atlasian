@@ -49,7 +49,7 @@ flowchart LR
 
 ### 1. Why Open Knowledge Format (OKF v0.3)?
 
-Andrej Karpathy's **LLM Wiki** gives a great workflow, but it leaves page metadata undefined. **[Open Knowledge Format (OKF v0.3)](https://github.com/open-knowledge-format/open-knowledge-format)** fills that gap with clean YAML frontmatter and standard Markdown links (`[Title](/folder/page.md)`).
+Andrej Karpathy's **LLM Wiki** gives a great workflow, but it leaves page metadata undefined. **[Open Knowledge Format (OKF v0.3)](https://github.com/open-knowledge-format/open-knowledge-format)** fills that gap with clean YAML frontmatter and standard relative Markdown links (`[Title](./page.md)`).
 
 With OKF v0.3, your agent gets **fast 2-step reading**—no embeddings and no vector database:
 

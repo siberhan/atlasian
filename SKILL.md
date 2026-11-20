@@ -62,7 +62,7 @@ Do **not** invent or force optional frontmatter fields that the user did not ena
 
 ### Links, Reading & Splitting
 
-- **Standard Markdown links only:** Always use standard Markdown links (`/folder/page.md` from `wiki/` root, or relative paths)—never `[[wikilinks]]`. Keep paths case-sensitive and percent-encode spaces if any exist.
+- **Standard Markdown relative links only:** Prefer relative Markdown links (`[Page Title](./page.md)`, `[Sub Page](./folder/page.md)`, `[Other](../other/page.md)`) inside `wiki/`—never `[[wikilinks]]`, and **never** prefix links with `/wiki/` (`wiki/` itself is the OKF bundle root, so relative links work everywhere: OKF viewers, Obsidian, GitHub, and all agents). Keep paths case-sensitive and percent-encode spaces if any exist.
 - **2-Step Reading (Zero Embeddings):**
   1. **Step 1 — Map:** Read `wiki/index.md` first (and `<folder>/index.md` if that folder was split). Pick only matching pages. Use `rg` (ripgrep) across `wiki/` when searching tags, metadata, or exact terms.
   2. **Step 2 — Full Page:** Open full Markdown bodies only for the selected pages.
