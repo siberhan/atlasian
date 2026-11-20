@@ -1,19 +1,19 @@
 ---
 name: atlasian
-description: Build, capture, compile, query, and maintain a living Markdown knowledge base (LLM Wiki) using Open Knowledge Format (OKF v0.3), immutable raw/ sources, an inbox/ staging layer for chat hooks and rough ideas, and customizable AGENTS.md user rules.
+description: Build, capture, compile, query, and maintain a living Markdown knowledge base (LLM Wiki) using Open Knowledge Format (OKF v0.3), read-only raw/ sources, an inbox/ staging layer for rough ideas and chat saves, and customizable AGENTS.md user rules.
 ---
 
 # atlasian — Living Markdown Knowledge Base (OKF v0.3)
 
-Maintain a persistent, interlinked Markdown wiki that compounds knowledge over time without vector databases, embeddings, or vendor lock-in.
+Maintain a persistent, interlinked Markdown wiki that compounds knowledge over time without vector databases, embeddings, background scripts, or vendor lock-in.
 
 ---
 
 ## 0. First Steps — Setup Check & Always Read `AGENTS.md`
 
 1. **Locate `<wiki-root>`:** Use the user's configured wiki folder path (default: `llm-wiki`, customizable at setup).
-2. **One-time setup gate:** If `<wiki-root>` does not exist, or if `<wiki-root>/.llm-wiki/capture.json` is missing (and `<wiki-root>/AGENTS.md` does not explicitly disable auto-capture), read `SETUP.md` in this skill folder and run setup first. Once configured, do not read `SETUP.md` again unless the user asks to reconfigure.
-3. **Read `<wiki-root>/AGENTS.md` first:** Before performing any wiki operation (`ingest`, `compile`, `query`, `lint`), read `<wiki-root>/AGENTS.md` if it exists.
+2. **One-time setup gate:** If `<wiki-root>` or `<wiki-root>/AGENTS.md` does not exist, read `SETUP.md` in this skill folder and run setup first. Once configured, do not read `SETUP.md` again unless the user asks to reconfigure.
+3. **Read `<wiki-root>/AGENTS.md` first:** Before performing any wiki operation (`capture`, `ingest`, `compile`, `query`, `lint`), read `<wiki-root>/AGENTS.md` if it exists.
 4. **User rules win (keep `AGENTS.md` global & slim):** `<wiki-root>/AGENTS.md` is the user's wiki-wide rulebook (enabled OKF fields, custom page types, tone, general layout rules). Whenever `<wiki-root>/AGENTS.md` conflicts with defaults in this `SKILL.md`, follow `<wiki-root>/AGENTS.md`. Do **not** list individual topic folders or folder-specific rules in root `AGENTS.md`—`wiki/index.md` is the folder map, and any folder-specific rules belong inside that folder's own `<folder>/index.md`.
 
 ---
@@ -22,12 +22,9 @@ Maintain a persistent, interlinked Markdown wiki that compounds knowledge over t
 
 ```text
 <wiki-root>/
-├── AGENTS.md                 # Optional: user rules and OKF field preferences (read first)
-├── .llm-wiki/
-│   ├── capture.json          # Auto-capture config created during setup
-│   └── state.json            # Per-session delta watermarks for hook capture
-├── raw/                      # Immutable finished sources (articles, PDFs, web clips)
-├── inbox/                    # Staging area: hook notes, brainstorms, voice transcripts
+├── AGENTS.md                 # Optional: global user rules and active OKF fields (read first)
+├── raw/                      # Read-only finished sources (articles, PDFs, web clips)
+├── inbox/                    # Staging area: rough ideas, brainstorms, voice transcripts, chat saves
 │   ├── AGENTS.md             # Optional: user filter rules for inbox/
 │   ├── index.md              # Map of active rough topic drafts in inbox/
 │   └── *.md                  # Rough notes waiting for compilation
@@ -37,8 +34,8 @@ Maintain a persistent, interlinked Markdown wiki that compounds knowledge over t
 ```
 
 - **`raw/` (Read-Only):** Curated, finished sources added by the user. **Never edit, rename, or delete files in `raw/`.**
-- **`inbox/` (Staging Area):** Rough inputs not ready for `wiki/` yet—auto-captured notes from chat hooks (compaction, reset, session end), quick brainstorms, voice memo transcripts, and rough drafts. Cleaned after compilation.
-- **`wiki/` (Compiled Knowledge):** Structured, cross-linked OKF Markdown pages maintained by the agent.
+- **`inbox/` (Staging Area):** Rough inputs not ready for `wiki/` yet—brainstorms, voice memo transcripts, rough drafts, and decisions or ideas the user asks to save from a chat. Cleaned after compilation.
+- **`wiki/` (Compiled Knowledge):** Structured, cross-linked OKF v0.3 Markdown pages maintained by the agent.
 
 ---
 
@@ -66,27 +63,33 @@ Do **not** invent or force optional frontmatter fields that the user did not ena
 - **2-Step Reading (Zero Embeddings):**
   1. **Step 1 — Map:** Read `wiki/index.md` first (and `<folder>/index.md` if that folder was split). Pick only matching pages. Use `rg` (ripgrep) across `wiki/` when searching tags, metadata, or exact terms.
   2. **Step 2 — Full Page:** Open full Markdown bodies only for the selected pages.
-- **Lazy Splitting & Folder Rules:** Start flat with a single root `wiki/index.md` (unless `<wiki-root>/AGENTS.md` specifies a folder-per-topic layout). Do not create empty subfolder `index.md` files upfront; add `<folder>/index.md` when a folder grows past ~25–30 files (or when the user creates a dedicated topic folder), keeping a one-line summary + link in root `wiki/index.md`. Keep any folder-specific rules (what belongs in the folder, subfolder conventions) inside `<folder>/index.md`—never duplicate them in root `AGENTS.md`—and always read `<folder>/index.md` before writing inside that folder.
+- **Lazy Splitting & Folder Rules:** Start flat with a single root `wiki/index.md` (unless `<wiki-root>/AGENTS.md` specifies a folder-per-topic layout). Do not create empty subfolder `index.md` files upfront; add `<folder>/index.md` when a folder grows past ~25–30 files (or when the user creates a dedicated topic folder), keeping a one-line summary + link in root `wiki/index.md`. Subfolder `index.md` files omit frontmatter (only root `wiki/index.md` declares `okf_version: "0.3"`). Keep any folder-specific rules (what belongs in the folder, subfolder conventions) inside `<folder>/index.md`—never duplicate them in root `AGENTS.md`—and always read `<folder>/index.md` before writing inside that folder.
 
 ---
 
 ## 3. Core Operations
 
+### Capture (Chat → `inbox/` or `wiki/`)
+When the user asks to save a decision, idea, or note from the current conversation:
+1. Read `<wiki-root>/AGENTS.md` (and `inbox/AGENTS.md` if saving to `inbox/`).
+2. If the note is still rough or exploratory, save it into `inbox/<topic-slug>.md` (appending to an existing topic draft if one matches in `inbox/index.md`) and update `inbox/index.md` using relative links (`./<topic-slug>.md`).
+3. If the user explicitly asks to file a settled decision or page directly into `wiki/`, create or update the OKF page directly, update `wiki/index.md` (or `<folder>/index.md`), and log it in `wiki/log.md`.
+
 ### Ingest (`raw/` → `wiki/`)
 1. Read `<wiki-root>/AGENTS.md` and the new source file(s) in `raw/`. Never modify `raw/`.
 2. If working interactively, summarize key takeaways and confirm what to emphasize (or batch-ingest if the user asks).
-3. Create or update relevant pages in `wiki/` using the user's configured OKF frontmatter and standard Markdown cross-links.
-4. Update `wiki/index.md` (or the relevant subfolder `index.md`) and append an entry to `wiki/log.md`.
+3. Create or update relevant pages in `wiki/` using the user's configured OKF frontmatter and standard relative Markdown links.
+4. Update `wiki/index.md` (or `<folder>/index.md`) and append an entry to `wiki/log.md`.
 
 ### Compile (`inbox/` → `wiki/`)
-1. Read `<wiki-root>/AGENTS.md` (and `inbox/AGENTS.md` if present). If `<wiki-root>/.llm-wiki/failed.json` exists with pending failed captures, offer to recover them first (`python3 <atlasian>/scripts/capture_inbox.py --config <wiki-root>/.llm-wiki/capture.json --retry-failed`). Then inspect `inbox/index.md` and all pending items in `inbox/` (auto-captured chat notes, brainstorms, voice transcripts, rough drafts).
-2. Filter aggressively: discard conversational noise, dead ends, and low-value chatter.
-3. Integrate surviving ideas, decisions, and facts into existing or new OKF pages in `wiki/`, recording provenance in `sources` or `resource` (for example `session:<session_id>` or `inbox/<file>.md`).
-4. Update `wiki/index.md` and `wiki/log.md`. Remove or clear compiled items from `inbox/` and refresh `inbox/index.md`.
+1. Read `<wiki-root>/AGENTS.md` (and `inbox/AGENTS.md` if present). Inspect `inbox/index.md` and all pending items in `inbox/` (brainstorms, voice transcripts, rough drafts, saved chat notes).
+2. Filter aggressively: discard noise, dead ends, and low-value chatter.
+3. Integrate surviving ideas, decisions, and facts into existing or new OKF pages in `wiki/`, recording provenance in `sources` or `resource` if enabled.
+4. Update `wiki/index.md` (or `<folder>/index.md`) and `wiki/log.md`. Remove or clear compiled items from `inbox/` and refresh `inbox/index.md`.
 
 ### Query (`wiki/` → Answer)
 1. Read `<wiki-root>/AGENTS.md`. Scan `wiki/index.md` (and use `rg` if needed) to find candidate pages.
-2. Open only the relevant pages and synthesize a direct answer with standard Markdown links to cited pages.
+2. Open only the relevant pages and synthesize a direct answer with standard relative Markdown links to cited pages.
 3. **Compound good answers:** If the query produces valuable synthesis (a comparison, trade-off analysis, or newly discovered connection), offer to file it into `wiki/` as a new OKF page and update `index.md` and `log.md`.
 
 ### Lint (Health Check)
@@ -118,4 +121,4 @@ Use operation tags: `ingest`, `compile`, `query`, `lint`, `setup`.
 
 ## 6. Modularity
 
-Everything beyond the core contract (`AGENTS.md` first, immutable `raw/`, OKF frontmatter + standard Markdown links, `index.md` + `log.md`) is optional. Adapt folder structure, page types, optional OKF fields, output formats, and local search tools (such as `rg` or `qmd` at large scale) in `<wiki-root>/AGENTS.md` as the wiki grows.
+Everything beyond the core contract (`AGENTS.md` first, read-only `raw/`, OKF frontmatter + standard relative Markdown links, `index.md` + `log.md`) is optional. Adapt folder structure, page types, optional OKF fields, output formats, and local search tools (such as `rg` or `qmd` at large scale) in `<wiki-root>/AGENTS.md` as the wiki grows.
